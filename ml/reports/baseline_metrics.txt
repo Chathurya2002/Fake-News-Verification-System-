@@ -1,0 +1,12 @@
+Classification Report (Pure Python Baseline)
+===========================================
+
+Accuracy:  0.9058
+Precision: 0.0000
+Recall:    0.0000
+F1-score:  0.0000
+
+Confusion Matrix
+================
+[[202 (Real correctly classified), 0 (Real classified as Fake)],
+ [21 (Fake classified as Real), 0 (Fake correctly classified)]]

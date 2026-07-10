@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: fake_news_db
+      POSTGRES_USER: fake_news_user
+      POSTGRES_PASSWORD: fake_news_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: ../backend
+    environment:
+      APP_ENV: development
+      DATABASE_URL: postgresql+psycopg://fake_news_user:fake_news_password@db:5432/fake_news_db
+      JWT_SECRET_KEY: change-this-secret
+      JWT_EXPIRES_MINUTES: 60
+      ALLOWED_ORIGINS: http://localhost:3000
+      ACTIVE_MODEL_PATH: app/ml/artifacts/tfidf_logreg_v1.joblib
+      MAX_NEWS_TEXT_LENGTH: 10000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+
+volumes:
+  postgres_data:

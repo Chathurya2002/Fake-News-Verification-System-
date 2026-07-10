@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Environment
+.env
+.env.local
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+
+# Data and model artifacts
+*.joblib
+*.pkl
+ml/data/raw/*
+ml/data/processed/*
+!ml/data/raw/.gitkeep
+!ml/data/processed/.gitkeep
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local databases
+backend/*.db
+*.db
+
+# Uploaded media and generated reports
+backend/uploads/*
+backend/reports_files/*
+!backend/uploads/.gitkeep
+!backend/reports_files/.gitkeep
+
