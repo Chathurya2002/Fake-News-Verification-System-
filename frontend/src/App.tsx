@@ -1650,7 +1650,7 @@ export default function App() {
                           <div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 13 }}>
                               <span style={{ color: '#e11d48', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#e11d48' }} /> Fake Misinformation
+                                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#e11d48' }} /> {inputType === 'image' ? 'AI-Generated / Synthetic Artifacts' : 'Fake Misinformation'}
                               </span>
                               <span style={{ color: '#0f172a', fontWeight: 800 }}>{Math.round(result.fake_probability * 100)}%</span>
                             </div>
@@ -1659,7 +1659,7 @@ export default function App() {
                           <div>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 13 }}>
                               <span style={{ color: '#059669', fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}>
-                                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#059669' }} /> Legitimate News
+                                <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#059669' }} /> {inputType === 'image' ? 'Authentic Optical Camera Capture' : 'Legitimate News'}
                               </span>
                               <span style={{ color: '#0f172a', fontWeight: 800 }}>{Math.round(result.real_probability * 100)}%</span>
                             </div>
@@ -1698,25 +1698,82 @@ export default function App() {
                     <p style={{ fontSize: 14, color: '#334155', lineHeight: 1.7, margin: 0, fontWeight: 400 }}>{result.explanation}</p>
                   </div>
 
-                  {/* Explainable AI (Feature Highlighting) */}
+                  {/* Explainable AI / Forensic Feature Highlighting */}
                   <div style={{ padding: '22px 28px', borderBottom: '1px solid #f1f5f9', background: '#fafafa' }}>
-                    <p style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 10, fontWeight: 700 }}>🔬 Explainable AI (Token Weights)</p>
-                    <div style={{
-                      background: '#ffffff',
-                      border: '1px solid #e2e8f0',
-                      padding: 16,
-                      borderRadius: 14,
-                      fontSize: 14,
-                      color: '#1e293b',
-                      lineHeight: 1.8,
-                      maxHeight: '190px',
-                      overflowY: 'auto',
-                      boxShadow: '0 1px 3px rgba(0,0,0,0.02) inset'
-                    }}>
-                      <HighlightedText text={content} importances={result.word_importances} />
-                    </div>
+                    <p style={{ fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 10, fontWeight: 700 }}>
+                      {inputType === 'image' ? '🔬 Forensic Signals & Computer Vision Breakdown' : '🔬 Explainable AI (Token Weights)'}
+                    </p>
+                    {inputType === 'image' ? (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '220px', overflowY: 'auto' }}>
+                        {result.word_importances && result.word_importances.length > 0 ? (
+                          result.word_importances.map((item, idx) => (
+                            <div key={idx} style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '10px 14px',
+                              borderRadius: 10,
+                              background: '#ffffff',
+                              border: `1px solid ${item.is_fake_indicator ? '#fecdd3' : '#a7f3d0'}`
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                <span style={{
+                                  fontSize: 13,
+                                  width: 22,
+                                  height: 22,
+                                  borderRadius: '50%',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  background: item.is_fake_indicator ? '#ffe4e6' : '#dcfce7',
+                                  color: item.is_fake_indicator ? '#e11d48' : '#059669',
+                                  fontWeight: 800
+                                }}>
+                                  {item.is_fake_indicator ? '⚠' : '✓'}
+                                </span>
+                                <span style={{ fontSize: 13, fontWeight: 600, color: '#1e293b' }}>
+                                  {item.word}
+                                </span>
+                              </div>
+                              <span style={{
+                                fontSize: 11,
+                                fontWeight: 700,
+                                padding: '3px 8px',
+                                borderRadius: 6,
+                                background: item.is_fake_indicator ? '#fff1f2' : '#ecfdf5',
+                                color: item.is_fake_indicator ? '#e11d48' : '#059669',
+                                border: `1px solid ${item.is_fake_indicator ? '#fda4af' : '#6ee7b7'}`
+                              }}>
+                                {item.is_fake_indicator ? 'Synthetic Signal' : 'Authentic Signal'} ({Math.round(item.weight * 100)}%)
+                              </span>
+                            </div>
+                          ))
+                        ) : (
+                          <div style={{ color: '#64748b', fontSize: 13 }}>No distinct forensic anomalies flagged.</div>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{
+                        background: '#ffffff',
+                        border: '1px solid #e2e8f0',
+                        padding: 16,
+                        borderRadius: 14,
+                        fontSize: 14,
+                        color: '#1e293b',
+                        lineHeight: 1.8,
+                        maxHeight: '190px',
+                        overflowY: 'auto',
+                        boxShadow: '0 1px 3px rgba(0,0,0,0.02) inset'
+                      }}>
+                        <HighlightedText text={content} importances={result.word_importances} />
+                      </div>
+                    )}
                     <p style={{ fontSize: 11, color: '#64748b', marginTop: 8, marginBottom: 0 }}>
-                      💡 <strong style={{ color: '#059669' }}>Green badges</strong> represent verified/factual signals, while <strong style={{ color: '#e11d48' }}>Red badges</strong> highlight deceptive/sensational terms.
+                      {inputType === 'image' ? (
+                        <>💡 <strong style={{ color: '#e11d48' }}>Red indicators</strong> flag Generative AI synthesis signals, while <strong style={{ color: '#059669' }}>Green indicators</strong> confirm authentic optical telemetry.</>
+                      ) : (
+                        <>💡 <strong style={{ color: '#059669' }}>Green badges</strong> represent verified/factual signals, while <strong style={{ color: '#e11d48' }}>Red badges</strong> highlight deceptive/sensational terms.</>
+                      )}
                     </p>
                   </div>
 
