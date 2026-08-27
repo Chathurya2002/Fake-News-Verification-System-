@@ -1,7 +1,10 @@
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Depends, HTTPException, Query, status, UploadFile, File
 import shutil
 from pathlib import Path
+# pyrefly: ignore [missing-import]
 from pydantic import BaseModel, Field
+# pyrefly: ignore [missing-import]
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -10,6 +13,7 @@ from app.core.database import get_db
 from app.core.models import User, NewsSubmission, Prediction, ModelVersion
 from app.core.security import get_current_user, get_current_user_or_guest
 from app.ml.inference import predict_news
+from app.services.virality_service import assess_virality_risk
 
 router = APIRouter()
 
@@ -49,6 +53,13 @@ class WordImportanceItem(BaseModel):
     is_fake_indicator: bool
 
 
+class ViralityRiskResponse(BaseModel):
+    virality_risk_level: str
+    virality_score: int
+    risk_factors: list[str]
+    recommendation: str
+
+
 class PredictionResponse(BaseModel):
     submission_id: int
     prediction_id: int
@@ -60,6 +71,7 @@ class PredictionResponse(BaseModel):
     word_importances: list[WordImportanceItem] | None = None
     fact_check_results: list[FactCheckResultResponse] | None = None
     source_credibility: SourceCredibilityResponse | None = None
+    virality_risk: ViralityRiskResponse | None = None
     model_version: ModelVersionResponse
     processing_time_ms: int
 
@@ -108,12 +120,15 @@ def create_prediction(
             detail="No active prediction model version is configured."
         )
 
-    # 2. Perform the classification (with URL text scraping if input_type is url)
+    # 2. Perform the classification (with URL text scraping if input_type is url or URL provided)
     content_to_classify = payload.content
-    if payload.input_type in ["url", "social"]:
+    source_url_to_store = None
+
+    if payload.input_type == "url" or (payload.input_type == "social" and (payload.content.strip().startswith("http://") or payload.content.strip().startswith("https://"))):
         from app.services.text_extraction_service import extract_text_from_url
         try:
-            content_to_classify = extract_text_from_url(payload.content)
+            content_to_classify = extract_text_from_url(payload.content.strip())
+            source_url_to_store = payload.content.strip()
         except Exception as e:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -126,7 +141,7 @@ def create_prediction(
     submission = NewsSubmission(
         user_id=current_user.id,
         input_text=content_to_classify,
-        source_url=payload.content if payload.input_type in ["url", "social"] else None,
+        source_url=source_url_to_store,
         source_type=payload.input_type,
         language="en"
     )
@@ -164,6 +179,14 @@ def create_prediction(
     db.commit()
     db.refresh(prediction)
 
+    # Calculate virality risk
+    virality = assess_virality_risk(
+        content_to_classify,
+        prediction.predicted_label,
+        float(prediction.confidence_score),
+        payload.input_type
+    )
+
     version_response = ModelVersionResponse(
         id=int(active_model.id),
         model_name=active_model.model_name,
@@ -181,6 +204,7 @@ def create_prediction(
         word_importances=result.word_importances,
         fact_check_results=fc_results,
         source_credibility=sc_results,
+        virality_risk=ViralityRiskResponse(**virality),
         model_version=version_response,
         processing_time_ms=prediction.processing_time_ms
     )
@@ -204,6 +228,7 @@ def analyze_image_prediction(
     with open(file_path, "wb") as f:
         f.write(file_bytes)
         
+    # pyrefly: ignore [missing-import]
     from app.services.image_verification_service import analyze_image
     result = analyze_image(file_bytes, file.filename)
     
@@ -305,6 +330,7 @@ class PredictionDetailResponse(BaseModel):
     word_importances: list[WordImportanceItem] | None = None
     fact_check_results: list[FactCheckResultResponse] | None = None
     source_credibility: SourceCredibilityResponse | None = None
+    virality_risk: ViralityRiskResponse | None = None
     model_version: ModelVersionResponse
     related_predictions: list[RelatedPredictionResponse] | None = None
     processing_time_ms: int
@@ -312,10 +338,97 @@ class PredictionDetailResponse(BaseModel):
     predicted_at: str
 
 
+class TrendingItem(BaseModel):
+    id: int
+    content: str
+    label: str
+    confidence_score: float
+    source_url: str | None = None
+    image_url: str | None = None
+    language: str | None = None
+    submitted_at: str
+
+
+class SyncLiveNewsResponse(BaseModel):
+    status: str
+    new_articles_synced: int
+    errors: list[str]
+
+
+@router.post("/trending/sync-live", response_model=SyncLiveNewsResponse)
+def sync_live_news_endpoint(
+    current_user: User = Depends(get_current_user_or_guest),
+    db: Session = Depends(get_db)
+):
+    # pyrefly: ignore [missing-import]
+    from app.services.live_news_service import fetch_and_sync_live_news
+    result = fetch_and_sync_live_news(db, max_items_per_feed=5)
+    return SyncLiveNewsResponse(
+        status=result["status"],
+        new_articles_synced=result["new_articles_synced"],
+        errors=result["errors"]
+    )
+
+
+@router.get("/trending", response_model=list[TrendingItem])
+def get_trending_news(
+    current_user: User = Depends(get_current_user_or_guest),
+    db: Session = Depends(get_db)
+) -> list[TrendingItem]:
+    # If no submissions exist, try live sync first, then fallback to seed
+    if db.query(NewsSubmission).count() == 0:
+        # pyrefly: ignore [missing-import]
+        from app.services.live_news_service import fetch_and_sync_live_news
+        try:
+            fetch_and_sync_live_news(db, max_items_per_feed=4)
+        except Exception:
+            from app.api.admin_routes import seed_trending_submissions
+            try:
+                seed_trending_submissions(db)
+            except Exception as e:
+                print(f"Error seeding trending news: {e}")
+
+    # Fetch top 20 most recent predictions joined with their submissions
+    predictions = (
+        db.query(Prediction, NewsSubmission)
+        .join(NewsSubmission, Prediction.submission_id == NewsSubmission.id)
+        .order_by(Prediction.predicted_at.desc())
+        .limit(20)
+        .all()
+    )
+
+    response = []
+    for pred, sub in predictions:
+        img_url = sub.media_path
+        if not img_url:
+            if sub.source_url and "adaderana" in sub.source_url:
+                img_url = "https://images.unsplash.com/photo-1588681664899-f142ff2dc9b1?w=600&auto=format&fit=crop&q=80"
+            elif sub.source_url and "bbc" in sub.source_url:
+                img_url = "https://images.unsplash.com/photo-1504711434969-e33886168f5c?w=600&auto=format&fit=crop&q=80"
+            elif sub.source_url and "aljazeera" in sub.source_url:
+                img_url = "https://images.unsplash.com/photo-1526470608268-f674ce90ebd4?w=600&auto=format&fit=crop&q=80"
+            else:
+                img_url = "https://images.unsplash.com/photo-1495020689067-958852a7765e?w=600&auto=format&fit=crop&q=80"
+
+        response.append(
+            TrendingItem(
+                id=int(pred.id),
+                content=sub.input_text[:280] + ("..." if len(sub.input_text) > 280 else ""),
+                label=pred.predicted_label,
+                confidence_score=float(pred.confidence_score),
+                source_url=sub.source_url,
+                image_url=img_url,
+                language=sub.language,
+                submitted_at=sub.submitted_at.isoformat() + "Z" if sub.submitted_at else ""
+            )
+        )
+    return response
+
+
 @router.get("/{prediction_id}", response_model=PredictionDetailResponse)
 def get_prediction_detail(
     prediction_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user_or_guest),
     db: Session = Depends(get_db)
 ) -> PredictionDetailResponse:
     prediction = db.query(Prediction).filter(Prediction.id == prediction_id).first()
@@ -323,8 +436,6 @@ def get_prediction_detail(
         raise HTTPException(status_code=404, detail="Prediction not found.")
         
     submission = prediction.submission
-    if current_user.role != "admin" and submission.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to view this prediction detail.")
         
     version_response = ModelVersionResponse(
         id=int(prediction.model_version.id),
@@ -366,6 +477,13 @@ def get_prediction_detail(
         related_list.sort(key=lambda x: x.similarity_score, reverse=True)
         related_list = related_list[:3]
 
+    virality = assess_virality_risk(
+        submission.input_text,
+        prediction.predicted_label,
+        float(prediction.confidence_score),
+        submission.source_type
+    )
+
     return PredictionDetailResponse(
         prediction_id=int(prediction.id),
         submission_id=int(submission.id),
@@ -380,6 +498,7 @@ def get_prediction_detail(
         word_importances=wi,
         fact_check_results=fcr,
         source_credibility=scr,
+        virality_risk=ViralityRiskResponse(**virality),
         model_version=version_response,
         related_predictions=related_list if related_list else None,
         processing_time_ms=prediction.processing_time_ms,

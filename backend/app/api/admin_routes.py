@@ -162,25 +162,120 @@ def activate_model_version(
     )
 
 
+def seed_trending_submissions(db: Session):
+    from app.ml.inference import predict_news
+    from app.services.fact_verification_service import verify_claim
+    from app.services.credibility_scoring_service import check_source_credibility
+    import json
+
+    admin = db.query(User).filter(User.email == "admin@truthlens.com").first()
+    admin_id = int(admin.id) if admin else 1
+
+    active_model = db.query(ModelVersion).filter(ModelVersion.is_active == True).first()
+    model_id = int(active_model.id) if active_model else 1
+
+    trending_claims = [
+        {
+            "content": "Central Bank of Sri Lanka announces immediate demonetization and replacement of Rs. 5000 currency notes due to security leak.",
+            "source_url": None,
+            "source_type": "text"
+        },
+        {
+            "content": "Sri Lanka receives official $500 million IMF disbursement following successful completion of economic policy review.",
+            "source_url": "https://factcheck.lk",
+            "source_type": "url"
+        },
+        {
+            "content": "BREAKING: Government imposes nationwide internet shutdown and social media ban starting midnight today due to emergency protocols.",
+            "source_url": None,
+            "source_type": "text"
+        },
+        {
+            "content": "Sri Lanka Tourism Board reports record high tourist arrivals exceeding 150,000 visitors in May 2026.",
+            "source_url": "https://dailymirror.lk",
+            "source_type": "url"
+        },
+        {
+            "content": "ලංකාවේ වැට් බද්ද සියයට 30 දක්වා වැඩි කිරීමට රජය අද හදිසියේ තීරණය කර ඇත",
+            "source_url": "https://factcheck.lk",
+            "source_type": "url"
+        },
+        {
+            "content": "Central Bank of Sri Lanka maintains key policy interest rates at current levels to support price stability and economic growth.",
+            "source_url": "https://ft.lk",
+            "source_type": "url"
+        },
+        {
+            "content": "Fuel prices in Sri Lanka will be slashed by Rs 60 per liter starting from midnight tonight, ministry confirms.",
+            "source_url": "https://srilanka.factcrescendo.com",
+            "source_type": "url"
+        },
+        {
+            "content": "Sri Lanka Customs achieves milestone revenue collection of Rs 1.5 trillion for current financial period.",
+            "source_url": "https://adaderana.lk",
+            "source_type": "url"
+        }
+    ]
+
+    for item in trending_claims:
+        res = predict_news(item["content"])
+        sub = NewsSubmission(
+            user_id=admin_id,
+            input_text=item["content"],
+            source_url=item["source_url"],
+            source_type=item["source_type"],
+            language="si" if "ලංකාවේ" in item["content"] else "en"
+        )
+        db.add(sub)
+        db.commit()
+        db.refresh(sub)
+
+        fc = verify_claim(item["content"], db)
+        sc = check_source_credibility(item["source_url"], item["content"], db)
+
+        pred = Prediction(
+            submission_id=sub.id,
+            model_version_id=model_id,
+            predicted_label=res.label,
+            confidence_score=res.confidence_score,
+            fake_probability=res.fake_probability,
+            real_probability=res.real_probability,
+            explanation=res.explanation,
+            word_importances=json.dumps(res.word_importances) if res.word_importances else None,
+            fact_check_results=json.dumps(fc) if fc else None,
+            source_credibility_results=json.dumps(sc) if sc else None,
+            processing_time_ms=res.processing_time_ms
+        )
+        db.add(pred)
+        db.commit()
+
+
 @router.get("/trending", response_model=list[TrendingItem])
 def get_trending_news(
     current_admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ) -> list[TrendingItem]:
-    # Fetch top 6 most recent predictions joined with their submissions
+    # Check if any submissions exist; if not, seed trending news items first!
+    if db.query(NewsSubmission).count() == 0:
+        try:
+            seed_trending_submissions(db)
+        except Exception as e:
+            print(f"Error seeding trending news: {e}")
+
+    # Fetch top 8 most recent predictions joined with their submissions
     predictions = (
         db.query(Prediction, NewsSubmission)
         .join(NewsSubmission, Prediction.submission_id == NewsSubmission.id)
         .order_by(Prediction.predicted_at.desc())
-        .limit(6)
+        .limit(8)
         .all()
     )
-    
+
     response = []
     for pred, sub in predictions:
         response.append(
             TrendingItem(
-                id=pred.id,
+                id=int(pred.id),
                 content=sub.input_text[:200] + ("..." if len(sub.input_text) > 200 else ""),
                 label=pred.predicted_label,
                 confidence_score=float(pred.confidence_score),

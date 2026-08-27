@@ -38,7 +38,7 @@ def get_current_user(token: str | None = Depends(oauth2_scheme), db: Session = D
         )
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=["HS256"])
-        email: str = payload.get("sub")
+        email: str | None = payload.get("sub")
         if email is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -79,7 +79,7 @@ def get_current_user_or_guest(token: str | None = Depends(oauth2_scheme), db: Se
         return guest_user
     try:
         payload = jwt.decode(token, settings.jwt_secret_key, algorithms=["HS256"])
-        email: str = payload.get("sub")
+        email: str | None = payload.get("sub")
         if email is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

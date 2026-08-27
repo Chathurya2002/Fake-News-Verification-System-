@@ -5,8 +5,13 @@ import collections
 from pathlib import Path
 from dataclasses import dataclass
 from time import perf_counter
-from app.core.config import settings
 
+import joblib
+
+
+# ============================================================
+# PREDICTION RESULT
+# ============================================================
 
 @dataclass(frozen=True)
 class PredictionResult:
@@ -19,219 +24,730 @@ class PredictionResult:
     word_importances: list[dict] | None = None
 
 
-_model = None
-_loaded_model_path = None
+# ============================================================
+# MODEL PATHS
+# ============================================================
 
-# Sinhala stop words list for tokenization
+BASE_DIR = Path(__file__).resolve().parent
+
+ARTIFACT_DIR = BASE_DIR / "artifacts"
+
+ENGLISH_MODEL_PATH = (
+    ARTIFACT_DIR / "tfidf_best_model.json"
+)
+
+SINHALA_MODEL_PATH = (
+    ARTIFACT_DIR / "sinhala_final_model.joblib"
+)
+
+
+# ============================================================
+# MODEL CACHE
+# ============================================================
+
+_english_model = None
+_sinhala_model = None
+
+
+# ============================================================
+# SINHALA STOP WORDS
+# ============================================================
+
 SINHALA_STOPWORDS = {
-    "සහ", "නම්", "එම", "මෙම", "යන", "වන", "ලැබූ", "කරන", "කරන්න", "ඇත", "මඟින්", "විසින්",
-    "නොව", "සඳහා", "ගැන", "වෙත", "ලෙස", "සිට", "තවද", "වෙතින්", "වැනි", "මෙන්ම", "භාවිතා",
-    "කරයි", "කරනු", "කර ඇත", "කර ඇති", "ලැබේ", "පවතී", "බව", "කළ", "නැත", "තවත්", "මෙමඟින්",
-    "මගින්", "කිරීම", "සඳහන්", "පිළිබඳ", "පිළිබඳව", "පමණක්", "කළේය", "විය", "නමුත්", "සමඟ",
-    "වෙති", "හේතුවෙන්", "තිබේ", "තිබූ", "ලැබී", "ඇති", "කරනවා", "නිසා", "එසේ", "නැවත"
+    "සහ", "නම්", "එම", "මෙම", "යන", "වන",
+    "ලැබූ", "කරන", "කරන්න", "ඇත", "මඟින්",
+    "විසින්", "නොව", "සඳහා", "ගැන", "වෙත",
+    "ලෙස", "සිට", "තවද", "වෙතින්", "වැනි",
+    "මෙන්ම", "බව", "කළ", "නැත", "තවත්",
+    "මගින්", "කිරීම", "සඳහන්", "පිළිබඳ",
+    "පිළිබඳව", "පමණක්", "විය", "නමුත්",
+    "සමඟ", "තිබේ", "තිබූ", "ලැබී", "ඇති",
+    "කරනවා", "නිසා", "එසේ", "නැවත"
 }
 
-def get_model():
-    global _model, _loaded_model_path
-    
-    # 1. Query the database to find the active model version's artifact path
-    db_paths = [
-        Path("backend/fake_news.db"),
-        Path("../backend/fake_news.db"),
-        Path("fake_news.db")
-    ]
-    db_file = None
-    for p in db_paths:
-        if p.exists():
-            db_file = p
-            break
-            
-    active_artifact_path = settings.active_model_path
-    if db_file:
-        import sqlite3
-        try:
-            conn = sqlite3.connect(db_file)
-            cursor = conn.cursor()
-            cursor.execute("SELECT artifact_path FROM model_versions WHERE is_active = 1 LIMIT 1")
-            row = cursor.fetchone()
-            if row:
-                active_artifact_path = row[0]
-            conn.close()
-        except Exception as e:
-            print(f"Error querying active model path from database: {e}")
 
-    model_path = Path(active_artifact_path)
-    
-    # Standardize path: handle cases where the python process is run in backend subfolder
-    if not model_path.exists():
-        alternative_path = Path("backend") / model_path
-        if alternative_path.exists():
-            model_path = alternative_path
-        else:
-            alternative_path2 = Path("..") / model_path
-            if alternative_path2.exists():
-                model_path = alternative_path2
+# ============================================================
+# LANGUAGE DETECTION
+# ============================================================
 
-    # 2. Check if the active path has changed, and load/reload the model
-    if _model is None or _loaded_model_path != str(model_path):
-        if model_path.exists():
-            try:
-                with open(model_path, "r", encoding="utf-8") as f:
-                    _model = json.load(f)
-                _loaded_model_path = str(model_path)
-                print(f"Successfully loaded active classifier model from {model_path}")
-            except Exception as e:
-                print(f"Error loading model from {model_path}: {e}")
-        else:
-            print(f"Model file not found at {model_path}. Fallback rule-based active.")
-            _model = None
-            _loaded_model_path = None
-            
-    return _model
+def detect_language(text: str) -> str:
 
+    text = str(text)
 
-def tokenize(text):
-    tokens = re.findall(r'[a-zA-Z\u0d80-\u0dff]+', text.lower())
-    return [t for t in tokens if t not in SINHALA_STOPWORDS]
-
-
-def sigmoid(z):
-    z = max(-50.0, min(50.0, z))
-    return 1.0 / (1.0 + math.exp(-z))
-
-
-def generate_explanation(vocab, weights, idfs, tokens, label) -> str:
-    try:
-        counts = collections.Counter(tokens)
-        word_scores = []
-        for word, count in counts.items():
-            if word in vocab:
-                idx = vocab[word]
-                tfidf_val = count * idfs[word]
-                weight = weights[idx]
-                score = weight * tfidf_val
-                word_scores.append((word, score))
-                
-        if not word_scores:
-            return "No strong indicative terms found in the text."
-            
-        # If label is 'fake' (class 1, positive coefficients), we sort descending.
-        # If label is 'real' (class 0, negative coefficients), we sort ascending.
-        if label == "fake":
-            word_scores.sort(key=lambda x: x[1], reverse=True)
-        else:
-            word_scores.sort(key=lambda x: x[1], reverse=False)
-            
-        top_words = [word for word, score in word_scores[:5]]
-        if top_words:
-            return f"The text was classified as {label} due to the presence and frequency of characteristic terms: {', '.join(top_words)}."
-        return "No specific indicative terms were highlighted."
-    except Exception as e:
-        return f"Explanation unavailable: {str(e)}"
-
-
-def predict_news(text: str) -> PredictionResult:
-    start = perf_counter()
-    model = get_model()
-
-    if model is not None:
-        try:
-            tokens = tokenize(text)
-            vocab = model["vocabulary"]
-            idfs = model["idfs"]
-            weights = model["weights"]
-            intercept = model["intercept"]
-
-            # Compute L2-normalized TF-IDF sparse vector
-            counts = collections.Counter(tokens)
-            doc_vector = {}
-            sq_sum = 0.0
-            word_scores = []
-            
-            for word, count in counts.items():
-                if word in vocab:
-                    idx = vocab[word]
-                    val = count * idfs[word]
-                    doc_vector[idx] = val
-                    sq_sum += val * val
-                    
-                    # Calculate weight contribution for explainable AI
-                    weight = weights[idx]
-                    score = weight * val
-                    word_scores.append((word, score))
-
-            norm = math.sqrt(sq_sum)
-            if norm > 0:
-                for idx in doc_vector:
-                    doc_vector[idx] /= norm
-
-            # Compute logistic regression prediction
-            z = sum(doc_vector[idx] * weights[idx] for idx in doc_vector) + intercept
-            fake_probability = sigmoid(z)
-            real_probability = 1.0 - fake_probability
-
-            label = "fake" if fake_probability >= 0.5 else "real"
-            confidence_score = fake_probability if label == "fake" else real_probability
-            
-            explanation = generate_explanation(vocab, weights, idfs, tokens, label)
-            
-            # Format word importances
-            word_importances = []
-            for word, score in word_scores:
-                word_importances.append({
-                    "word": word,
-                    "weight": round(float(score), 4),
-                    "is_fake_indicator": bool(score > 0)
-                })
-            # Sort by absolute weight descending
-            word_importances.sort(key=lambda x: abs(x["weight"]), reverse=True)
-            
-            elapsed_ms = int((perf_counter() - start) * 1000)
-
-            return PredictionResult(
-                label=label,
-                confidence_score=round(confidence_score, 4),
-                fake_probability=round(fake_probability, 4),
-                real_probability=round(real_probability, 4),
-                explanation=explanation,
-                processing_time_ms=max(1, elapsed_ms),
-                word_importances=word_importances
-            )
-        except Exception as e:
-            print(f"Error during model prediction: {e}. Falling back to rules.")
-
-    # Rule-based fallback if model is missing or prediction fails
-    lowered = text.lower()
-    suspicious_terms = ["shocking", "miracle", "secret", "urgent", "exposed", "fake"]
-    matches = [term for term in suspicious_terms if term in lowered]
-
-    fake_probability = min(0.95, 0.35 + (0.12 * len(matches)))
-    real_probability = round(1.0 - fake_probability, 4)
-    label = "fake" if fake_probability >= 0.5 else "real"
-
-    explanation = (
-        "Rule-based prediction. No trained model available. Matches: " + ", ".join(matches)
-        if matches
-        else "Rule-based prediction. No trained model available and no key patterns detected."
+    sinhala_chars = re.findall(
+        r"[\u0D80-\u0DFF]",
+        text
     )
 
-    word_importances = []
-    for term in suspicious_terms:
-        if term in lowered:
-            word_importances.append({
-                "word": term,
-                "weight": 1.0,
-                "is_fake_indicator": True
-            })
+    english_chars = re.findall(
+        r"[A-Za-z]",
+        text
+    )
 
-    elapsed_ms = int((perf_counter() - start) * 1000)
+    sinhala_count = len(sinhala_chars)
+    english_count = len(english_chars)
+
+    total_letters = (
+        sinhala_count
+        + english_count
+    )
+
+    if total_letters == 0:
+        return "english"
+
+    sinhala_ratio = (
+        sinhala_count
+        / total_letters
+    )
+
+    # Sinhala article may contain English names,
+    # URLs or organisation names.
+    if (
+        sinhala_count >= 3
+        and sinhala_ratio >= 0.20
+    ):
+        return "sinhala"
+
+    return "english"
+
+
+# ============================================================
+# LOAD ENGLISH MODEL
+# ============================================================
+
+def get_english_model():
+
+    global _english_model
+
+    if _english_model is None:
+
+        if not ENGLISH_MODEL_PATH.exists():
+
+            print(
+                "English model not found:",
+                ENGLISH_MODEL_PATH
+            )
+
+            return None
+
+        try:
+
+            with open(
+                ENGLISH_MODEL_PATH,
+                "r",
+                encoding="utf-8"
+            ) as file:
+
+                _english_model = json.load(
+                    file
+                )
+
+            print(
+                "English model loaded:"
+            )
+
+            print(
+                _english_model.get(
+                    "model_name",
+                    "Unknown"
+                )
+            )
+
+        except Exception as error:
+
+            print(
+                "English model loading error:",
+                error
+            )
+
+            _english_model = None
+
+    return _english_model
+
+
+# ============================================================
+# LOAD SINHALA MODEL
+# ============================================================
+
+def get_sinhala_model():
+
+    global _sinhala_model
+
+    if _sinhala_model is None:
+
+        if not SINHALA_MODEL_PATH.exists():
+
+            print(
+                "Sinhala model not found:",
+                SINHALA_MODEL_PATH
+            )
+
+            return None
+
+        try:
+
+            _sinhala_model = joblib.load(
+                SINHALA_MODEL_PATH
+            )
+
+            print(
+                "Sinhala model loaded successfully."
+            )
+
+        except Exception as error:
+
+            print(
+                "Sinhala model loading error:",
+                error
+            )
+
+            _sinhala_model = None
+
+    return _sinhala_model
+
+
+# ============================================================
+# ENGLISH TOKENIZER
+# ============================================================
+
+def english_tokenize(text: str):
+
+    tokens = re.findall(
+        r"[a-zA-Z\u0D80-\u0DFF]+",
+        str(text).lower()
+    )
+
+    return [
+        token
+        for token in tokens
+        if token not in SINHALA_STOPWORDS
+    ]
+
+
+# ============================================================
+# ENGLISH TF-IDF VECTOR
+# ============================================================
+
+def build_english_vector(
+    tokens,
+    vocabulary,
+    idfs
+):
+
+    counts = collections.Counter(
+        tokens
+    )
+
+    vector = {}
+
+    squared_sum = 0.0
+
+    for word, count in counts.items():
+
+        if (
+            word not in vocabulary
+            or word not in idfs
+        ):
+            continue
+
+        index = vocabulary[word]
+
+        # Training used raw TF * IDF
+        value = (
+            float(count)
+            * float(idfs[word])
+        )
+
+        vector[index] = value
+
+        squared_sum += (
+            value * value
+        )
+
+    # L2 normalization
+    norm = math.sqrt(
+        squared_sum
+    )
+
+    if norm > 0:
+
+        for index in list(
+            vector.keys()
+        ):
+
+            vector[index] /= norm
+
+    return vector
+
+
+# ============================================================
+# SVM MARGIN CONFIDENCE
+# ============================================================
+
+def svm_margin_confidence(
+    decision_score: float
+) -> float:
+
+    """
+    Linear SVM does not provide native calibrated
+    probabilities.
+
+    This converts decision margin magnitude into a
+    simple display confidence value.
+    """
+
+    magnitude = abs(
+        float(decision_score)
+    )
+
+    confidence = (
+        1.0
+        / (
+            1.0
+            + math.exp(-magnitude)
+        )
+    )
+
+    return min(
+        max(
+            confidence,
+            0.50
+        ),
+        0.99
+    )
+
+
+# ============================================================
+# ENGLISH PREDICTION
+# ============================================================
+
+def predict_english(
+    text: str
+) -> PredictionResult:
+
+    start = perf_counter()
+
+    model = get_english_model()
+
+    if model is None:
+
+        raise RuntimeError(
+            "English trained model could not be loaded."
+        )
+
+    vocabulary = model[
+        "vocabulary"
+    ]
+
+    idfs = model[
+        "idfs"
+    ]
+
+    weights = model[
+        "weights"
+    ]
+
+    intercept = float(
+        model["intercept"]
+    )
+
+    tokens = english_tokenize(
+        text
+    )
+
+    vector = build_english_vector(
+        tokens,
+        vocabulary,
+        idfs
+    )
+
+    # --------------------------------------------------------
+    # UNKNOWN / VERY LOW VOCABULARY COVERAGE
+    # --------------------------------------------------------
+
+    if not vector:
+
+        elapsed_ms = int(
+            (
+                perf_counter()
+                - start
+            )
+            * 1000
+        )
+
+        return PredictionResult(
+            label="real",
+            confidence_score=0.50,
+            fake_probability=None,
+            real_probability=None,
+            explanation=(
+                "Language detected: English. "
+                "The text contained too few terms "
+                "recognised by the trained English "
+                "model, so this prediction has low "
+                "confidence."
+            ),
+            processing_time_ms=max(
+                1,
+                elapsed_ms
+            ),
+            word_importances=[]
+        )
+
+    # --------------------------------------------------------
+    # LINEAR SVM DECISION SCORE
+    # --------------------------------------------------------
+
+    decision_score = (
+
+        sum(
+            vector[index]
+            * float(weights[index])
+
+            for index in vector
+
+            if index < len(weights)
+        )
+
+        + intercept
+    )
+
+    # Class 1 = Fake
+    # Class 0 = Real
+
+    label = (
+        "fake"
+        if decision_score >= 0
+        else "real"
+    )
+
+    confidence = svm_margin_confidence(
+        decision_score
+    )
+
+    # --------------------------------------------------------
+    # WORD CONTRIBUTIONS
+    # --------------------------------------------------------
+
+    reverse_vocabulary = {
+        index: word
+        for word, index
+        in vocabulary.items()
+    }
+
+    importances = []
+
+    for index, tfidf_value in vector.items():
+
+        if index >= len(weights):
+            continue
+
+        word = reverse_vocabulary.get(
+            index
+        )
+
+        if not word:
+            continue
+
+        contribution = (
+            tfidf_value
+            * float(weights[index])
+        )
+
+        importances.append(
+            {
+                "word": word,
+                "weight": round(
+                    contribution,
+                    4
+                ),
+                "is_fake_indicator":
+                    contribution > 0
+            }
+        )
+
+    importances.sort(
+        key=lambda item:
+            abs(item["weight"]),
+        reverse=True
+    )
+
+    importances = importances[:20]
+
+    important_words = [
+        item["word"]
+        for item in importances[:5]
+    ]
+
+    explanation = (
+        f"Language detected: English. "
+        f"The final English Linear SVM model "
+        f"classified the article as "
+        f"{label.upper()}."
+    )
+
+    if important_words:
+
+        explanation += (
+            " Important TF-IDF terms included: "
+            + ", ".join(
+                important_words
+            )
+            + "."
+        )
+
+    elapsed_ms = int(
+        (
+            perf_counter()
+            - start
+        )
+        * 1000
+    )
 
     return PredictionResult(
         label=label,
-        confidence_score=round(max(fake_probability, real_probability), 4),
-        fake_probability=round(fake_probability, 4),
-        real_probability=real_probability,
+        confidence_score=round(
+            confidence,
+            4
+        ),
+        # Linear SVM does not provide
+        # calibrated probabilities.
+        fake_probability=None,
+        real_probability=None,
         explanation=explanation,
-        processing_time_ms=max(1, elapsed_ms),
-        word_importances=word_importances
+        processing_time_ms=max(
+            1,
+            elapsed_ms
+        ),
+        word_importances=importances
     )
+
+
+# ============================================================
+# SINHALA PREDICTION
+# ============================================================
+
+def predict_sinhala(
+    text: str
+) -> PredictionResult:
+
+    start = perf_counter()
+
+    model = get_sinhala_model()
+
+    if model is None:
+
+        raise RuntimeError(
+            "Sinhala trained model could not be loaded."
+        )
+
+    clean_text = re.sub(
+        r"\s+",
+        " ",
+        str(text)
+    ).strip()
+
+    # --------------------------------------------------------
+    # CLASSIFICATION
+    # --------------------------------------------------------
+
+    prediction = model.predict(
+        [clean_text]
+    )[0]
+
+    label = str(
+        prediction
+    ).lower()
+
+    fake_probability = None
+    real_probability = None
+    confidence = 0.50
+
+    # --------------------------------------------------------
+    # LOGISTIC REGRESSION PROBABILITIES
+    # --------------------------------------------------------
+
+    if hasattr(
+        model,
+        "predict_proba"
+    ):
+
+        probabilities = (
+            model.predict_proba(
+                [clean_text]
+            )[0]
+        )
+
+        classes = list(
+            model.classes_
+        )
+
+        probability_map = {
+            str(class_name).lower():
+                float(probability)
+
+            for class_name, probability
+            in zip(
+                classes,
+                probabilities
+            )
+        }
+
+        fake_probability = (
+            probability_map.get(
+                "fake"
+            )
+        )
+
+        real_probability = (
+            probability_map.get(
+                "real"
+            )
+        )
+
+        if label == "fake":
+
+            confidence = (
+                fake_probability
+                if fake_probability is not None
+                else 0.50
+            )
+
+        else:
+
+            confidence = (
+                real_probability
+                if real_probability is not None
+                else 0.50
+            )
+
+    # --------------------------------------------------------
+    # FALLBACK FOR LINEAR SVM IF MODEL EVER CHANGES
+    # --------------------------------------------------------
+
+    elif hasattr(
+        model,
+        "decision_function"
+    ):
+
+        decision = float(
+            model.decision_function(
+                [clean_text]
+            )[0]
+        )
+
+        confidence = (
+            svm_margin_confidence(
+                decision
+            )
+        )
+
+    explanation = (
+        "Language detected: Sinhala. "
+        "The Sinhala fake-news classifier "
+        f"classified the article as "
+        f"{label.upper()}. "
+        "The Sinhala model is an experimental "
+        "extension evaluated on a limited "
+        "independent real-data sample."
+    )
+
+    elapsed_ms = int(
+        (
+            perf_counter()
+            - start
+        )
+        * 1000
+    )
+
+    return PredictionResult(
+        label=label,
+        confidence_score=round(
+            float(confidence),
+            4
+        ),
+        fake_probability=(
+            round(
+                fake_probability,
+                4
+            )
+            if fake_probability is not None
+            else None
+        ),
+        real_probability=(
+            round(
+                real_probability,
+                4
+            )
+            if real_probability is not None
+            else None
+        ),
+        explanation=explanation,
+        processing_time_ms=max(
+            1,
+            elapsed_ms
+        ),
+        word_importances=[]
+    )
+
+
+# ============================================================
+# MAIN BILINGUAL PREDICTION
+# ============================================================
+
+def predict_news(
+    text: str
+) -> PredictionResult:
+
+    if not text or not str(
+        text
+    ).strip():
+
+        return PredictionResult(
+            label="real",
+            confidence_score=0.50,
+            fake_probability=None,
+            real_probability=None,
+            explanation=(
+                "No usable news text was provided."
+            ),
+            processing_time_ms=1,
+            word_importances=[]
+        )
+
+    language = detect_language(
+        text
+    )
+
+    try:
+
+        if language == "sinhala":
+
+            return predict_sinhala(
+                text
+            )
+
+        return predict_english(
+            text
+        )
+
+    except Exception as error:
+
+        print(
+            "Prediction error:",
+            error
+        )
+
+        return PredictionResult(
+            label="real",
+            confidence_score=0.50,
+            fake_probability=None,
+            real_probability=None,
+            explanation=(
+                "The trained model could not "
+                "complete the prediction. "
+                "Please check the model files."
+            ),
+            processing_time_ms=1,
+            word_importances=[]
+        )

@@ -1,0 +1,31 @@
+{
+  "include": [
+    "backend",
+    "ml"
+  ],
+  "executionEnvironments": [
+    {
+      "root": "backend",
+      "extraPaths": [
+        "backend",
+        "backend/.venv/Lib/site-packages",
+        "ml"
+      ]
+    },
+    {
+      "root": ".",
+      "extraPaths": [
+        "backend",
+        "backend/.venv/Lib/site-packages",
+        "ml"
+      ]
+    }
+  ],
+  "extraPaths": [
+    "backend",
+    "backend/.venv/Lib/site-packages",
+    "ml"
+  ],
+  "venvPath": "backend",
+  "venv": ".venv"
+}

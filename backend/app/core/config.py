@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///fake_news.db"
     jwt_secret_key: str = "change-this-secret"
     jwt_expires_minutes: int = 60
-    allowed_origins: str = "http://localhost:5173,http://localhost:3000"
+    allowed_origins: str = "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
     active_model_path: str = "app/ml/artifacts/tfidf_logreg_v1.json"
     max_news_text_length: int = 10000
 

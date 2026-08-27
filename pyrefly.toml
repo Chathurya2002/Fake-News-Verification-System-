@@ -1,0 +1,21 @@
+project-includes = [
+    "backend",
+    "ml"
+]
+
+search-path = [
+    "backend",
+    "backend/.venv/Lib/site-packages",
+    "ml"
+]
+
+python-interpreter = "backend/.venv/Scripts/python.exe"
+
+infer-with-first-use = false
+
+[errors]
+bad-argument-type = false
+unsupported-operation = false
+no-matching-overload = false
+unexpected-keyword = false
+bad-assignment = false

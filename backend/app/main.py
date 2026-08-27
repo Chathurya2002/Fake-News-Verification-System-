@@ -91,31 +91,30 @@ async def lifespan(app: FastAPI):
             db.commit()
 
         # Seed default users
-        admin_user = db.query(User).filter(User.email == "admin@truthlens.com").first()
-        if not admin_user:
-            admin = User(
-                id=1,
-                full_name="TruthLens Admin",
-                email="admin@truthlens.com",
-                password_hash=get_password_hash("adminpassword"),
-                role="admin",
-                is_active=True
-            )
-            db.add(admin)
-            db.commit()
-            
-        normal_user = db.query(User).filter(User.email == "user@truthlens.com").first()
-        if not normal_user:
-            user = User(
-                id=2,
-                full_name="Regular User",
-                email="user@truthlens.com",
-                password_hash=get_password_hash("userpassword"),
-                role="user",
-                is_active=True
-            )
-            db.add(user)
-            db.commit()
+        demo_users = [
+            ("TruthLens Admin", "admin@truthlens.com", "adminpassword", "admin"),
+            ("TruthGuard Admin", "admin@truthguard.com", "adminpassword", "admin"),
+            ("Regular User", "user@truthlens.com", "userpassword", "user"),
+            ("Regular User", "user@truthguard.com", "userpassword", "user"),
+        ]
+        for name, email, pwd, role in demo_users:
+            if not db.query(User).filter(User.email == email).first():
+                db.add(User(
+                    full_name=name,
+                    email=email,
+                    password_hash=get_password_hash(pwd),
+                    role=role,
+                    is_active=True
+                ))
+        db.commit()
+
+        from app.core.models import NewsSubmission
+        if db.query(NewsSubmission).count() == 0:
+            from app.api.admin_routes import seed_trending_submissions
+            try:
+                seed_trending_submissions(db)
+            except Exception as e:
+                print(f"Error seeding trending news on startup: {e}")
     finally:
         db.close()
         

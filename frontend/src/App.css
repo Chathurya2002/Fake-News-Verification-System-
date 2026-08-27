@@ -1,1 +1,73 @@
-/* Reset App.css - all styles moved to index.css and App component */
+/* App.css - Modern Design System */
+
+.glass-panel {
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(226, 232, 240, 0.8);
+  box-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.05), 0 0 1px 1px rgba(255, 255, 255, 0.6) inset;
+  border-radius: 20px;
+}
+
+.glass-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  box-shadow: 0 4px 20px -4px rgba(15, 23, 42, 0.04);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 30px -6px rgba(99, 102, 241, 0.12);
+  border-color: #c7d2fe;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: white;
+  border: none;
+  font-weight: 600;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35);
+  transition: all 0.25s ease;
+  cursor: pointer;
+}
+
+.btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.45);
+  opacity: 0.95;
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge-fake {
+  background: #fff1f2;
+  color: #e11d48;
+  border: 1px solid #fecdd3;
+}
+
+.badge-real {
+  background: #ecfdf5;
+  color: #059669;
+  border: 1px solid #a7f3d0;
+}
+
+.badge-primary {
+  background: #e0e7ff;
+  color: #4338ca;
+  border: 1px solid #c7d2fe;
+}
